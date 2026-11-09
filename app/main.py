@@ -31,8 +31,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    # `ctx` can hold non-serialisable objects and `input` can echo values such as
-    # NaN that JSON cannot encode (which would turn a 422 into a 500), so drop both.
     errors = [{k: v for k, v in e.items() if k not in ("ctx", "input")} for e in exc.errors()]
     msg = errors[0].get("msg", "Invalid request data.") if errors else "Invalid request data."
     msg = msg.removeprefix("Value error, ")

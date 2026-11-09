@@ -19,10 +19,6 @@ def execute_fuel_purchase(
         )
 
     try:
-        # Lock order is always user -> product, so concurrent purchases cannot deadlock.
-        # populate_existing: the auth dependency already loaded this user (unlocked)
-        # into the session; without it the locked SELECT would return that stale
-        # copy and concurrent purchases would overwrite each other's balance.
         user = (
             db.query(User)
             .filter(User.id == user_id)
