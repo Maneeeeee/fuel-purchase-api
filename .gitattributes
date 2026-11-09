@@ -1,0 +1,3 @@
+# Ensure docker-entrypoint.sh always has LF line endings on Linux
+* text=auto
+*.sh text eol=lf
