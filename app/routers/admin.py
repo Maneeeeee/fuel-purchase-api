@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,53 +21,56 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 PathId = Annotated[int, Path(ge=1, le=2_147_483_647)]
 
 _USERNAME_TAKEN = "Username already exists."
+_PRODUCT_NAME_TAKEN = "Product name already exists."
 
 
-def _commit_unique_username(db: Session) -> None:
-    """Commit, turning a lost username race (unique violation) into a 400."""
+def _commit_or_handle_integrity(db: Session, duplicate_msg: str) -> None:
+    """Commit transaction, converting unique constraint violations into 400."""
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_USERNAME_TAKEN) from None
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=duplicate_msg) from None
 
 
-# Every route is registered with and without a trailing slash so clients never
-# hit a 307 redirect (which many HTTP clients do not follow for POST/PATCH).
+@router.get("/products", response_model=list[ProductResponse])
+def list_products(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    """Retrieve all fuel products (admin convenience endpoint)."""
+    return db.query(Product).order_by(Product.id.asc()).limit(limit).offset(offset).all()
 
 
-@router.post("/products/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
-@router.post(
-    "/products",
-    response_model=ProductResponse,
-    status_code=status.HTTP_201_CREATED,
-    include_in_schema=False,
-)
+@router.post("/products", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 def create_product(
     payload: ProductCreate,
     db: Session = Depends(get_db),
     _: Admin = Depends(get_current_admin),
 ):
+    if db.query(Product).filter(Product.name == payload.name).first():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_PRODUCT_NAME_TAKEN)
+
     product = Product(
         name=payload.name,
         price_per_litre=payload.price_per_litre,
         available_litres=payload.available_litres,
     )
     db.add(product)
-    db.commit()
+    _commit_or_handle_integrity(db, _PRODUCT_NAME_TAKEN)
     db.refresh(product)
     return product
 
 
-@router.patch("/products/{product_id}/", response_model=ProductResponse)
-@router.patch("/products/{product_id}", response_model=ProductResponse, include_in_schema=False)
+@router.patch("/products/{product_id}", response_model=ProductResponse)
 def update_product(
     product_id: PathId,
     payload: ProductUpdate,
     db: Session = Depends(get_db),
     _: Admin = Depends(get_current_admin),
 ):
-    # Row lock serialises this edit with in-flight purchases.
     product = db.query(Product).filter(Product.id == product_id).populate_existing().with_for_update().first()
     if not product:
         raise HTTPException(
@@ -75,21 +78,32 @@ def update_product(
             detail="Product does not exist.",
         )
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    new_name = update_data.get("name")
+    if new_name is not None and new_name != product.name:
+        if db.query(Product).filter(Product.name == new_name).first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_PRODUCT_NAME_TAKEN)
+
+    for field, value in update_data.items():
         setattr(product, field, value)
 
-    db.commit()
+    _commit_or_handle_integrity(db, _PRODUCT_NAME_TAKEN)
     db.refresh(product)
     return product
 
 
-@router.post("/users/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-@router.post(
-    "/users",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-    include_in_schema=False,
-)
+@router.get("/users", response_model=list[UserResponse])
+def list_users(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    """Retrieve all users (admin convenience endpoint)."""
+    return db.query(User).order_by(User.id.asc()).limit(limit).offset(offset).all()
+
+
+@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
     payload: UserCreate,
     db: Session = Depends(get_db),
@@ -106,13 +120,12 @@ def create_user(
         account_balance=payload.account_balance,
     )
     db.add(user)
-    _commit_unique_username(db)
+    _commit_or_handle_integrity(db, _USERNAME_TAKEN)
     db.refresh(user)
     return user
 
 
-@router.patch("/users/{user_id}/", response_model=UserResponse)
-@router.patch("/users/{user_id}", response_model=UserResponse, include_in_schema=False)
+@router.patch("/users/{user_id}", response_model=UserResponse)
 def update_user(
     user_id: PathId,
     payload: UserUpdate,
@@ -135,6 +148,6 @@ def update_user(
     for field, value in update_data.items():
         setattr(user, field, value)
 
-    _commit_unique_username(db)
+    _commit_or_handle_integrity(db, _USERNAME_TAKEN)
     db.refresh(user)
     return user

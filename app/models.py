@@ -18,7 +18,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     price_per_litre: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     available_litres: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
@@ -39,6 +39,7 @@ class User(Base):
     account_balance: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), default=Decimal("0.00"), nullable=False
     )
+    api_token: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
 
     purchases: Mapped[list["Purchase"]] = relationship("Purchase", back_populates="user")
 

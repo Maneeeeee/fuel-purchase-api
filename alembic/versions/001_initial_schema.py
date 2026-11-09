@@ -18,6 +18,7 @@ def upgrade() -> None:
         sa.CheckConstraint("price_per_litre >= 0", name="check_product_price_non_negative"),
         sa.CheckConstraint("available_litres >= 0", name="check_product_stock_non_negative"),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("name", name="uq_products_name"),
     )
     op.create_index(op.f("ix_products_id"), "products", ["id"], unique=False)
 
@@ -34,11 +35,13 @@ def upgrade() -> None:
             server_default=sa.text("0.00"),
             nullable=False,
         ),
+        sa.Column("api_token", sa.String(length=64), nullable=True),
         sa.CheckConstraint("account_balance >= 0", name="check_user_balance_non_negative"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_users_id"), "users", ["id"], unique=False)
     op.create_index(op.f("ix_users_username"), "users", ["username"], unique=True)
+    op.create_index(op.f("ix_users_api_token"), "users", ["api_token"], unique=True)
 
     op.create_table(
         "admins",
@@ -83,6 +86,7 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_admins_id"), table_name="admins")
     op.drop_table("admins")
 
+    op.drop_index(op.f("ix_users_api_token"), table_name="users")
     op.drop_index(op.f("ix_users_username"), table_name="users")
     op.drop_index(op.f("ix_users_id"), table_name="users")
     op.drop_table("users")

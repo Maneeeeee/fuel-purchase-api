@@ -92,6 +92,7 @@ class UserResponse(BaseModel):
     username: str
     birthdate: date
     account_balance: Decimal
+    api_token: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
     @field_serializer("account_balance", when_used="json")
@@ -133,3 +134,13 @@ class PurchaseHistoryItem(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: str
+
+
+class TokenRequest(BaseModel):
+    username: Name50
+    user_id: IntId
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

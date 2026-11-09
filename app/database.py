@@ -23,11 +23,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 @event.listens_for(Engine, "connect")
-def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
-    """SQLite ignores foreign keys unless asked; make it behave like PostgreSQL."""
+def _configure_sqlite(dbapi_connection, connection_record):
+    """Configure SQLite for foreign keys and concurrency timeout."""
     if isinstance(dbapi_connection, sqlite3.Connection):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
 

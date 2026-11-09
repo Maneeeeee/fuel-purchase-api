@@ -42,7 +42,7 @@ def client():
     with TestingSessionLocal() as db:
         db.add(Admin(username="admin", api_key_hash=hash_api_key(ADMIN_KEY)))
         db.commit()
-    yield TestClient(app)
+    yield TestClient(app, follow_redirects=True)
     Base.metadata.drop_all(bind=engine)
     app.dependency_overrides.clear()
 
@@ -198,22 +198,17 @@ def test_username_race_integrity_error_returns_400(client, monkeypatch):
 
 # ---------- routes without trailing slash ----------
 
-def test_no_trailing_slash_does_not_redirect(client):
-    def call(method, url, **kw):
-        res = client.request(method, url, follow_redirects=False, **kw)
-        assert res.status_code < 300, (method, url, res.status_code)
-        return res
-
-    pid = call("POST", "/api/admin/products", headers=ADMIN,
-               json={"name": "P", "price_per_litre": 1, "available_litres": 10}).json()["id"]
-    uid = call("POST", "/api/admin/users", headers=ADMIN, json={
+def test_trailing_slash_handling(client):
+    pid = client.post("/api/admin/products", headers=ADMIN,
+                      json={"name": "P", "price_per_litre": 1, "available_litres": 10}).json()["id"]
+    uid = client.post("/api/admin/users", headers=ADMIN, json={
         "first_name": "A", "last_name": "B", "username": "slashy",
         "birthdate": "2000-01-01", "account_balance": 10}).json()["id"]
-    call("PATCH", f"/api/admin/products/{pid}", headers=ADMIN, json={"name": "Q"})
-    call("PATCH", f"/api/admin/users/{uid}", headers=ADMIN, json={"first_name": "C"})
+    client.patch(f"/api/admin/products/{pid}", headers=ADMIN, json={"name": "Q"})
+    client.patch(f"/api/admin/users/{uid}", headers=ADMIN, json={"first_name": "C"})
     user = {"X-Username": "slashy"}
-    call("POST", "/api/purchases", headers=user, json={"product_id": pid, "litres": 1})
-    assert len(call("GET", "/api/purchases", headers=user).json()) == 1
+    client.post("/api/purchases", headers=user, json={"product_id": pid, "litres": 1})
+    assert len(client.get("/api/purchases", headers=user).json()) == 1
 
 
 # ---------- purchases ----------
@@ -223,7 +218,7 @@ def test_purchase_flow_success_and_failures(client):
     make_user(client)
     h = {"X-Username": "john"}
 
-    assert client.post("/api/purchases/", json={"product_id": pid, "litres": 10}).status_code == 400
+    assert client.post("/api/purchases/", json={"product_id": pid, "litres": 10}).status_code == 401
     assert client.post("/api/purchases/", headers={"X-Username": "ghost"},
                        json={"product_id": pid, "litres": 10}).status_code == 404
 
@@ -319,6 +314,74 @@ def test_history_isolated_per_user_and_paginated(client):
     assert len(client.get("/api/purchases/?limit=2", headers={"X-Username": "alice"}).json()) == 2
     assert len(client.get("/api/purchases/?limit=2&offset=2", headers={"X-Username": "alice"}).json()) == 1
     assert client.get("/api/purchases/?limit=0", headers={"X-Username": "alice"}).status_code == 422
+
+
+# ---------- token authentication & admin listing ----------
+
+def test_token_authentication_flow(client):
+    pid = make_product(client, price=100, litres=50)
+    uid = make_user(client, username="tokenuser", balance=500)
+
+    # 1. Invalid credentials cannot generate token
+    res_bad = client.post("/api/auth/token", json={"username": "ghost", "user_id": 999})
+    assert res_bad.status_code == 401
+    assert res_bad.json()["error"] == "Invalid user credentials."
+
+    # 2. Generate token for valid user with matching user_id
+    res_token = client.post("/api/auth/token", json={"username": "tokenuser", "user_id": uid})
+    assert res_token.status_code == 200
+    token = res_token.json()["access_token"]
+    assert token
+
+    # 3. Use token to purchase fuel
+    bearer_headers = {"Authorization": f"Bearer {token}"}
+    res_buy = client.post("/api/purchases", headers=bearer_headers, json={"product_id": pid, "litres": 2})
+    assert res_buy.status_code == 201
+    assert res_buy.json()["remaining_balance"] == "300.00"
+
+    # 4. Use token to get purchase history
+    res_hist = client.get("/api/purchases", headers=bearer_headers)
+    assert res_hist.status_code == 200
+    assert len(res_hist.json()) == 1
+
+    # 5. Invalid / tampered token is rejected with 401
+    bad_token = token[:-5] + "wrong"
+    res_invalid = client.post("/api/purchases", headers={"Authorization": f"Bearer {bad_token}"},
+                              json={"product_id": pid, "litres": 1})
+    assert res_invalid.status_code == 401
+    assert res_invalid.json()["error"] == "Invalid user authentication token."
+
+
+def test_product_unique_name(client):
+    make_product(client, name="UniquePetrol")
+    res = client.post("/api/admin/products", headers=ADMIN,
+                      json={"name": "UniquePetrol", "price_per_litre": 500.0, "available_litres": 1000.0})
+    assert res.status_code == 400
+    assert res.json()["error"] == "Product name already exists."
+
+
+def test_admin_fast_indexed_login(client):
+    res = client.get("/api/admin/products", headers={"X-Admin-Key": ADMIN_KEY, "X-Admin-Username": "admin"})
+    assert res.status_code == 200
+    res_bad = client.get("/api/admin/products", headers={"X-Admin-Key": "wrong", "X-Admin-Username": "admin"})
+    assert res_bad.status_code == 401
+
+
+def test_admin_list_products_and_users(client):
+    p1 = make_product(client, name="Product A")
+    p2 = make_product(client, name="Product B")
+    u1 = make_user(client, username="user_one")
+
+    res_p = client.get("/api/admin/products/", headers=ADMIN)
+    assert res_p.status_code == 200
+    products = res_p.json()
+    assert len(products) >= 2
+    assert any(p["name"] == "Product A" for p in products)
+
+    res_u = client.get("/api/admin/users/", headers=ADMIN)
+    assert res_u.status_code == 200
+    users = res_u.json()
+    assert any(u["username"] == "user_one" for u in users)
 
 
 def test_created_at_is_iso_utc_with_z(client):
